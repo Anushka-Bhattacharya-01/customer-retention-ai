@@ -1,0 +1,98 @@
+name: ML Pipeline
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write # needed for AWS OIDC login (no long-lived access keys)
+
+jobs:
+  infra-checks:
+    name: Terraform and Helm checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+
+      - name: Terraform fmt
+        run: terraform -chdir=terraform fmt -check -recursive
+
+      - name: Terraform validate
+        run: |
+          terraform -chdir=terraform init -backend=false -input=false
+          terraform -chdir=terraform validate
+
+      - uses: azure/setup-helm@v4
+
+      - name: Helm lint and render
+        run: |
+          helm lint helm/churn-api
+          helm template churn helm/churn-api --set model.s3Uri=s3://bucket/models/latest/model.joblib > /dev/null
+
+  train-test-build:
+    name: Train, test and build
+    runs-on: ubuntu-latest
+    needs: infra-checks
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Generate data
+        run: python data/generate_data.py
+
+      - name: Unit tests (data, model, assistant)
+        run: python -m pytest tests/test_data_and_model.py tests/test_assistant.py -v
+
+      - name: Train model with quality gate
+        run: python -m src.train
+        # exits with code 1 if accuracy / ROC-AUC are below the threshold -> pipeline stops
+
+      - name: API tests against the trained model
+        run: python -m pytest tests/test_api.py -v
+
+      - name: Build Docker image
+        run: docker build -t churn-api:${{ github.sha }} .
+
+      - name: Smoke test the container
+        run: |
+          docker run -d --name api -p 8000:8000 churn-api:${{ github.sha }}
+          for i in $(seq 1 20); do curl -sf localhost:8000/health && break; sleep 2; done
+          curl -sf -X POST localhost:8000/predict -H "Content-Type: application/json" \
+            -d '{"tenure":3,"monthly_charges":95.5,"total_charges":286.5,"contract":"month-to-month","internet_service":"fiber","support_calls":4,"paperless_billing":1}'
+
+      - name: Upload MLflow runs and metrics
+        uses: actions/upload-artifact@v4
+        with:
+          name: mlflow-run-${{ github.sha }}
+          path: |
+            mlruns/
+            mlflow.db
+            models/metrics.json
+
+      # ---- Optional: runs only when the repo variables AWS_ROLE_ARN and ECR_REPOSITORY are set ----
+      - name: Configure AWS credentials (OIDC)
+        if: github.ref == 'refs/heads/main' && vars.AWS_ROLE_ARN != ''
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION || 'ap-south-1' }}
+
+      - name: Push image to Amazon ECR
+        if: github.ref == 'refs/heads/main' && vars.AWS_ROLE_ARN != ''
+        run: |
+          REGISTRY="${{ vars.ECR_REPOSITORY }}"
+          aws ecr get-login-password | docker login --username AWS --password-stdin "${REGISTRY%%/*}"
+          docker tag churn-api:${{ github.sha }} "$REGISTRY:${{ github.sha }}"
+          docker push "$REGISTRY:${{ github.sha }}"
