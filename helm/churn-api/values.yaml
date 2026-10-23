@@ -1,0 +1,67 @@
+replicaCount: 2
+
+image:
+  # Set to the ECR repository from `terraform output ecr_repository_url`
+  repository: 123456789012.dkr.ecr.ap-south-1.amazonaws.com/churn-mlops/churn-api
+  tag: "latest"     # use the git SHA tag pushed by CI (ECR tags are immutable)
+  pullPolicy: IfNotPresent
+
+serviceAccount:
+  create: true
+  name: churn-api
+  # IRSA: role from `terraform output model_api_role_arn` (read models from S3, call Bedrock)
+  roleArn: ""
+
+model:
+  # If set, the API downloads the model from S3 at startup instead of using the one baked into the image
+  s3Uri: ""          # e.g. s3://<artifacts-bucket>/models/latest/model.joblib
+  metricsS3Uri: ""   # e.g. s3://<artifacts-bucket>/models/latest/metrics.json
+
+# Non-secret assistant settings -> ConfigMap
+assistant:
+  llmProvider: bedrock            # "mock" for clusters without Bedrock access
+  bedrockModelId: anthropic.claude-3-haiku-20240307-v1:0
+  bedrockRegion: ap-south-1
+  maxAgentSteps: "5"
+  maxOutputTokens: "500"
+
+# Postgres connection string is read from an existing Kubernetes Secret (never stored in values)
+# kubectl create secret generic churn-api-db -n ml-serving \
+#   --from-literal=DATABASE_URL='postgresql+psycopg://user:pass@host:5432/assistant'
+database:
+  existingSecret: churn-api-db
+  secretKey: DATABASE_URL
+
+service:
+  type: ClusterIP
+  port: 80
+  targetPort: 8000
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 256Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi
+
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 6
+  targetCPUUtilizationPercentage: 70
+
+# Requires the Prometheus Operator (kube-prometheus-stack)
+serviceMonitor:
+  enabled: false
+  interval: 30s
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: false
+  capabilities:
+    drop: ["ALL"]

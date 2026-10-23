@@ -1,0 +1,14 @@
+region      = "ap-south-1"
+project     = "churn-mlops"
+environment = "dev"
+
+# GPU training instance (off by default - costs money)
+enable_gpu_training = false
+# training_subnet_id = "subnet-xxxxxxxx"
+
+# Set these to create the IRSA role for the model API on EKS
+# eks_oidc_provider_arn = "arn:aws:iam::123456789012:oidc-provider/oidc.eks.ap-south-1.amazonaws.com/id/XXXX"
+# eks_oidc_provider_url = "oidc.eks.ap-south-1.amazonaws.com/id/XXXX"
+
+# Bedrock model the assistant may call
+# bedrock_model_id = "anthropic.claude-3-haiku-20240307-v1:0"

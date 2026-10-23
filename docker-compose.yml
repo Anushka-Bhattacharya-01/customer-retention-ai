@@ -1,0 +1,54 @@
+# Local stack: Postgres + model/assistant API + MLflow UI + Prometheus + Grafana
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: assistant
+      POSTGRES_USER: assistant
+      POSTGRES_PASSWORD: localdev   # local only; on EKS this comes from a Kubernetes Secret
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U assistant"]
+      interval: 5s
+      retries: 10
+
+  api:
+    build: .
+    environment:
+      DATABASE_URL: postgresql+psycopg://assistant:localdev@postgres:5432/assistant
+      LLM_PROVIDER: ${LLM_PROVIDER:-mock}           # set to "bedrock" to use Amazon Bedrock
+      BEDROCK_MODEL_ID: ${BEDROCK_MODEL_ID:-anthropic.claude-3-haiku-20240307-v1:0}
+      AWS_REGION: ${AWS_REGION:-ap-south-1}
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  mlflow:
+    image: python:3.11-slim
+    working_dir: /project
+    command: sh -c "pip install -q 'mlflow>=3.0' && mlflow ui --backend-store-uri sqlite:///mlflow.db --host 0.0.0.0 --port 5000"
+    volumes:
+      - ./:/project
+    ports:
+      - "5000:5000"
+
+  prometheus:
+    image: prom/prometheus:v2.54.1
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "9090:9090"
+    depends_on:
+      - api
+
+  grafana:
+    image: grafana/grafana:11.2.0
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+    depends_on:
+      - prometheus

@@ -1,0 +1,12 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "churn-api.fullname" . }}
+  labels:
+    {{- include "churn-api.labels" . | nindent 4 }}
+data:
+  LLM_PROVIDER: {{ .Values.assistant.llmProvider | quote }}
+  BEDROCK_MODEL_ID: {{ .Values.assistant.bedrockModelId | quote }}
+  BEDROCK_REGION: {{ .Values.assistant.bedrockRegion | quote }}
+  MAX_AGENT_STEPS: {{ .Values.assistant.maxAgentSteps | quote }}
+  MAX_OUTPUT_TOKENS: {{ .Values.assistant.maxOutputTokens | quote }}
